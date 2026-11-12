@@ -13,9 +13,6 @@ requires-python = ">=3.10"
 authors = [{name = "Traser"}]
 keywords = ["ai-agents", "debugging", "instrumentation", "tracing", "investigation"]
 
-[project.urls]
-Source = "https://github.com/Maas-Dorian/traser-sdk"
-Issues = "https://github.com/Maas-Dorian/traser-sdk/issues"
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
@@ -26,6 +23,10 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
   "Operating System :: OS Independent",
 ]
+
+[project.urls]
+Source = "https://github.com/Maas-Dorian/traser-sdk"
+Issues = "https://github.com/Maas-Dorian/traser-sdk/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
