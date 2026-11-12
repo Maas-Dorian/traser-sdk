@@ -67,7 +67,7 @@ jobs:
           with tarfile.open(sdists[0]) as archive:
               paths = archive.getnames()
               assert any(path.endswith("/LICENSE") for path in paths), paths
-              assert any(path.endswith("/NOTICE") for path in paths
+              assert any(path.endswith("/NOTICE") for path in paths)
 
           print("Apache-2.0 wheel/sdist checks passed")
           PY
