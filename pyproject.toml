@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=77.0.3", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "traser-sdk"
+version = "0.1.0"
+description = "Local-first execution evidence recorder for Traser agent investigations"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.10"
+authors = [{name = "Traser"}]
+keywords = ["ai-agents", "debugging", "instrumentation", "tracing", "investigation"]
+
+[project.urls]
+Source = "https://github.com/Maas-Dorian/traser-sdk"
+Issues = "https://github.com/Maas-Dorian/traser-sdk/issues"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Operating System :: OS Independent",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,8 @@
+Traser Python SDK
+Copyright 2026 Traser contributors
+
+This project is licensed under the Apache License, Version 2.0.
+A copy of the license is included in the LICENSE file.
+
+The Traser engine, web application and separately distributed npm MCP package
+are not included in this open-source Python SDK repository.
