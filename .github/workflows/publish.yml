@@ -1,0 +1,129 @@
+name: Publish Python SDK to PyPI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Verify and build release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify release tag and provenance
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main || {
+            echo 'Release commit must be part of main'
+            exit 1
+          }
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          package = tomllib.loads(Path("pyproject.toml").read_text())
+          version = package["project"]["version"]
+          expected = "v" + version
+          tag = os.environ["RELEASE_TAG"]
+          assert tag == expected, f"Expected release tag {expected}, got {tag}"
+          assert package["project"]["name"] == "traser-sdk"
+          assert package["project"]["license"] == "Apache-2.0"
+          for path in ("LICENSE", "NOTICE"):
+              assert Path(path).is_file() and Path(path).stat().st_size > 0
+          print(f"Verified {tag} from main")
+          PY
+      - name: Install build tools and SDK
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m pip install -e .
+      - name: Run SDK unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Verify synthetic evidence export
+        run: |
+          python examples/refund.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("examples")
+          run = json.loads((root / "refund-run.json").read_text())
+          request = json.loads((root / "refund-request.json").read_text())
+          assert run["schemaVersion"] == "0.1"
+          assert request["execution"]["schemaVersion"] == "0.1"
+          assert request["evidence"]["coverage"] == "partial"
+          assert request["evidence"]["requirements"]
+          PY
+      - name: Build wheel and source distribution
+        run: python -m build --outdir dist
+      - name: Verify archives and Apache-2.0 metadata
+        run: |
+          python -m twine check dist/*
+          python - <<'PY'
+          import glob
+          import tarfile
+          import tomllib
+          import zipfile
+          from pathlib import Path
+
+          metadata_config = tomllib.loads(Path("pyproject.toml").read_text())
+          version = metadata_config["project"]["version"]
+          wheels = glob.glob("dist/*.whl")
+          sdists = glob.glob("dist/*.tar.gz")
+          assert len(wheels) == 1 and len(sdists) == 1, (wheels, sdists)
+          with zipfile.ZipFile(wheels[0]) as archive:
+              names = archive.namelist()
+              assert any(n.endswith(".dist-info/licenses/LICENSE") for n in names)
+              assert any(n.endswith(".dist-info/licenses/NOTICE") for n in names)
+              path = next(n for n in names if n.endswith(".dist-info/METADATA"))
+              metadata = archive.read(path).decode("utf-8")
+              assert "License-Expression: Apache-2.0" in metadata
+              assert "Name: traser-sdk" in metadata
+              assert f"Version: {version}" in metadata
+          with tarfile.open(sdists[0]) as archive:
+              names = archive.getnames()
+              assert any(n.endswith("/LICENSE") for n in names)
+              assert any(n.endswith("/NOTICE") for n in names)
+          PY
+      - name: Upload verified distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-sdk-dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish verified distribution
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/project/traser-sdk/
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download verified packages
+        uses: actions/download-artifact@v4
+        with:
+          name: python-sdk-dist
+          path: dist/
+      - name: Publish to PyPI with OIDC
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
