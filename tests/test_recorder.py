@@ -205,7 +205,7 @@ class RecorderTests(unittest.TestCase):
         request = run.to_request()
         self.assertEqual(request["execution"]["steps"][1]["status"], "failure")
         self.assertEqual(request["execution"]["steps"][1]["error"], {"type": "RuntimeError"})
-        self.assertEqual(request["evidence"]["verificationChecks"], [])
+        self.assertNotIn("verificationChecks", request["evidence"])
         self.assertNotIn("private-provider-token", json.dumps(request))
 
     def test_async_external_state_verification(self):
