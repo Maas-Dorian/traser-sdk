@@ -30,6 +30,8 @@ _EVIDENCE_KINDS = {
     "effective_config", "job_receipt", "terminal_state", "other",
 }
 _SOURCE_KINDS = {"trace", "log", "database", "api", "runtime", "file", "other"}
+_VERIFICATION_BASES = {"agent_output", "tool_response", "external_state", "unknown"}
+_STATE_PATH = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _SECRET_KEYS = {
     "password", "passwd", "secret", "client_secret", "private_key", "api_key",
     "apikey", "access_token", "refresh_token", "authorization", "cookie",
@@ -158,6 +160,7 @@ class RunSession:
         self._source_index: dict[tuple[str, str], str] = {}
         self._observations: list[dict[str, Any]] = []
         self._requirements: list[dict[str, Any]] = []
+        self._verification_checks: list[dict[str, Any]] = []
         self._context: dict[str, str] = {}
         self._final_output: Any = _MISSING
         self._warnings: list[str] = []
@@ -336,6 +339,52 @@ class RunSession:
             self._requirements.append(requirement)
             return requirement_id
 
+
+    def mark_verification(self, *, claim_step_id: str, basis: str,
+                          operation_step_id: str | None = None,
+                          observation_id: str | None = None,
+                          observed_value_path: str | None = None,
+                          expected_value: Any = _MISSING) -> str:
+        """Declare the *recorded* provenance of a verification; not a trust assertion."""
+        if basis not in _VERIFICATION_BASES:
+            raise ValueError("invalid verification basis")
+        if observed_value_path is not None:
+            if (not isinstance(observed_value_path, str) or len(observed_value_path) > 256
+                    or not _STATE_PATH.fullmatch(observed_value_path)
+                    or any(x in {"__proto__", "constructor", "prototype"}
+                           for x in observed_value_path.split("."))):
+                raise ValueError("observed_value_path must be safe dot-separated keys")
+        if expected_value is not _MISSING:
+            if (expected_value is not None and type(expected_value) not in
+                    (str, int, float, bool)):
+                raise ValueError("expected_value must be a JSON scalar")
+            if isinstance(expected_value, float) and not math.isfinite(expected_value):
+                raise ValueError("expected_value must be finite")
+            if isinstance(expected_value, str) and len(expected_value) > 256:
+                raise ValueError("expected_value is too long")
+        with self._lock:
+            step_ids = {step["id"] for step in self._steps}
+            if claim_step_id not in step_ids:
+                raise ValueError("claim_step_id must reference a recorded step")
+            if operation_step_id is not None and operation_step_id not in step_ids:
+                raise ValueError("operation_step_id must reference a recorded step")
+            if observation_id is not None and not any(
+                    item["id"] == observation_id for item in self._observations):
+                raise ValueError("observation_id must reference a recorded observation")
+            if len(self._verification_checks) >= 50:
+                raise ValueError("Traser limits evidence to 50 verification checks")
+            record = {"id": uuid.uuid4().hex, "claimStepId": claim_step_id, "basis": basis}
+            if operation_step_id is not None:
+                record["operationStepId"] = operation_step_id
+            if observation_id is not None:
+                record["observationId"] = observation_id
+            if observed_value_path is not None:
+                record["observedValuePath"] = observed_value_path
+            if expected_value is not _MISSING:
+                record["expectedValue"] = expected_value
+            self._verification_checks.append(record)
+            return record["id"]
+
     def to_run(self) -> dict[str, Any]:
         with self._lock:
             result: dict[str, Any] = {
@@ -358,6 +407,7 @@ class RunSession:
                 "sources": json.loads(json.dumps(self._sources)),
                 "observations": json.loads(json.dumps(self._observations)),
                 "requirements": json.loads(json.dumps(self._requirements)),
+                "verificationChecks": json.loads(json.dumps(self._verification_checks)),
             }
             result: dict[str, Any] = {"execution": self.to_run(), "evidence": evidence}
             if self._context:
@@ -382,6 +432,7 @@ class Operation:
         self.idempotency_key = idempotency_key
         self.side_effect_target = side_effect_target
         self.last_step_id: str | None = None
+        self.last_write_step_id: str | None = None
 
     def __enter__(self) -> Operation:
         return self
@@ -393,6 +444,7 @@ class Operation:
         step = self.run._begin_step(self.name, "tool", operation=self, attempt=attempt,
                                     input_value={"args": list(args), "kwargs": kwargs})
         self.last_step_id = step["id"]
+        self.last_write_step_id = step["id"]
         return step
 
     def call(self, function: Callable[..., Any], *args: Any, attempt: int = 1, **kwargs: Any) -> Any:
@@ -441,3 +493,100 @@ class Operation:
         return self.run._require(kind=kind, required_for=required_for,
                                  step_id=step_id or self.last_step_id,
                                  consistency_deadline=consistency_deadline)
+
+    def mark_verification(self, claim_step_id: str, *, basis: str) -> str:
+        """Mark an existing evaluator/agent step as checking only known evidence."""
+        return self.run.mark_verification(
+            claim_step_id=claim_step_id, operation_step_id=self.last_write_step_id, basis=basis)
+
+    def _external_read_step(self, args: tuple[Any, ...], kwargs: dict[str, Any],
+                            source_kind: str, locator: str,
+                            expected_path: str, expected_value: Any) -> dict[str, Any]:
+        if self.last_write_step_id is None:
+            raise ValueError("record a tool operation before verifying its resulting state")
+        if source_kind not in {"api", "database"}:
+            raise ValueError("external checks must use source_kind='api' or 'database'")
+        if not isinstance(locator, str) or not locator.strip() or len(locator) > 1024:
+            raise ValueError("external source locator must be a nonempty label, not an access token")
+        if (not isinstance(expected_path, str) or len(expected_path) > 256
+                or not _STATE_PATH.fullmatch(expected_path)
+                or any(x in {"__proto__", "constructor", "prototype"}
+                       for x in expected_path.split("."))):
+            raise ValueError("expected_path must be safe dot-separated object keys")
+        if expected_value is not None and type(expected_value) not in (str, int, float, bool):
+            raise ValueError("expected_value must be a JSON scalar")
+        if isinstance(expected_value, float) and not math.isfinite(expected_value):
+            raise ValueError("expected_value must be finite")
+        if isinstance(expected_value, str) and len(expected_value) > 256:
+            raise ValueError("expected_value is too long")
+        step = self.run._begin_step("read_external_state:" + self.name, "tool",
+            operation=self, input_value={"args": list(args), "kwargs": kwargs,
+                                         "expected_path": expected_path,
+                                         "expected_value": expected_value})
+        self.last_step_id = step["id"]
+        return step
+
+    @staticmethod
+    def _matches_state(state: Any, path: str, expected: Any) -> tuple[bool, str]:
+        value = state
+        for key in path.split("."):
+            if not isinstance(value, dict) or key not in value:
+                return False, "field_missing"
+            value = value[key]
+        equal = type(value) is type(expected) and value == expected
+        return equal, "matched" if equal else "mismatched"
+
+    def _complete_external_read(self, step: dict[str, Any], state: Any, *,
+                                source_kind: str, locator: str,
+                                expected_path: str, expected_value: Any) -> bool:
+        observation_id = self.run._observe(
+            kind="post_write_state", source_kind=source_kind, locator=locator,
+            value=state, step_id=step["id"], observed_at=None)
+        matched, comparison = self._matches_state(state, expected_path, expected_value)
+        self.run.mark_verification(
+            claim_step_id=step["id"], operation_step_id=self.last_write_step_id,
+            basis="external_state", observation_id=observation_id,
+            observed_value_path=expected_path, expected_value=expected_value)
+        self.run._end_step(step, status="success",
+                           output={"comparison": comparison, "observationId": observation_id})
+        return matched
+
+    def verify_external(self, reader: Callable[..., Any], *args: Any,
+                        source_kind: str, locator: str, expected_path: str,
+                        expected_value: Any, **kwargs: Any) -> bool:
+        """Execute a caller-authorized read-only callback and compare its recorded state.
+
+        This does not authenticate the source or retry/wait for eventual consistency.
+        False means observed mismatch/absent field, not proof the write permanently failed.
+        """
+        if inspect.iscoroutinefunction(reader):
+            raise TypeError("async readers require await operation.averify_external(...)")
+        step = self._external_read_step(args, kwargs, source_kind, locator, expected_path, expected_value)
+        try:
+            state = reader(*args, **kwargs)
+            if inspect.isawaitable(state):
+                if inspect.iscoroutine(state):
+                    state.close()
+                raise TypeError("reader returned an awaitable; use averify_external instead")
+            return self._complete_external_read(step, state, source_kind=source_kind, locator=locator,
+                                                 expected_path=expected_path, expected_value=expected_value)
+        except BaseException as exc:
+            self.run._end_step(step, status="failure", error=exc)
+            raise
+
+    async def averify_external(self, reader: Callable[..., Any], *args: Any,
+                               source_kind: str, locator: str, expected_path: str,
+                               expected_value: Any, **kwargs: Any) -> bool:
+        """Async equivalent of verify_external using the application's own API client."""
+        step = self._external_read_step(args, kwargs, source_kind, locator, expected_path, expected_value)
+        try:
+            state = reader(*args, **kwargs)
+            if not inspect.isawaitable(state):
+                raise TypeError("averify_external requires an awaitable reader result")
+            state = await state
+            return self._complete_external_read(step, state, source_kind=source_kind, locator=locator,
+                                                 expected_path=expected_path, expected_value=expected_value)
+        except BaseException as exc:
+            self.run._end_step(step, status="failure", error=exc)
+            raise
+
