@@ -407,8 +407,10 @@ class RunSession:
                 "sources": json.loads(json.dumps(self._sources)),
                 "observations": json.loads(json.dumps(self._observations)),
                 "requirements": json.loads(json.dumps(self._requirements)),
-                "verificationChecks": json.loads(json.dumps(self._verification_checks)),
             }
+            if self._verification_checks:
+                # Preserve compatibility with MCP 0.3.1 when no new checks exist.
+                evidence["verificationChecks"] = json.loads(json.dumps(self._verification_checks))
             result: dict[str, Any] = {"execution": self.to_run(), "evidence": evidence}
             if self._context:
                 result["context"] = dict(self._context)
