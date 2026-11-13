@@ -130,5 +130,100 @@ class RecorderTests(unittest.TestCase):
         self.assertNotIn("output", run.to_run()["steps"][0])
 
 
+    def test_verification_provenance_marks_tool_response_as_insufficient(self):
+        with Traser().run("receipt-only") as run:
+            with run.operation("issue_refund") as op:
+                op.call(lambda: {"status": "pending"})
+                claim = run.record_step("verify from receipt", kind="evaluator",
+                                        status="success", output={"complete": True})
+                op.mark_verification(claim, basis="tool_response")
+        check = run.to_request()["evidence"]["verificationChecks"][0]
+        self.assertEqual(check["basis"], "tool_response")
+        self.assertEqual(check["claimStepId"], claim)
+        self.assertEqual(check["operationStepId"], run.to_run()["steps"][0]["id"])
+        self.assertNotIn("observationId", check)
+
+    def test_authorized_external_read_records_state_mismatch_and_match(self):
+        calls = []
+        def read_provider(refund_id):
+            calls.append(refund_id)
+            return {"data": {"status": "pending" if len(calls) == 1 else "completed"}}
+        with Traser().run("verify refund") as run:
+            with run.operation("issue_refund") as op:
+                op.call(lambda: {"refund_id": "r42", "status": "accepted"})
+                self.assertFalse(op.verify_external(
+                    read_provider, "r42", source_kind="api",
+                    locator="provider/refunds/r42", expected_path="data.status",
+                    expected_value="completed"))
+                self.assertTrue(op.verify_external(
+                    read_provider, "r42", source_kind="api",
+                    locator="provider/refunds/r42", expected_path="data.status",
+                    expected_value="completed"))
+        self.assertEqual(calls, ["r42", "r42"])
+        request = run.to_request()
+        checks = request["evidence"]["verificationChecks"]
+        self.assertEqual([x["basis"] for x in checks], ["external_state", "external_state"])
+        self.assertEqual([x["expectedValue"] for x in checks], ["completed", "completed"])
+        self.assertEqual([x["observedValuePath"] for x in checks], ["data.status", "data.status"])
+        self.assertEqual(len(request["evidence"]["observations"]), 2)
+        self.assertEqual(len(request["execution"]["steps"]), 3)
+        self.assertEqual([s["output"]["comparison"] for s in request["execution"]["steps"][1:]],
+                         ["mismatched", "matched"])
+        self.assertTrue(all(check["operationStepId"] == request["execution"]["steps"][0]["id"]
+                            for check in checks))
+        self.assertNotIn("postconditionVerified", json.dumps(request))
+
+    def test_external_read_missing_field_and_type_safety(self):
+        with Traser().run("verify") as run:
+            with run.operation("create") as op:
+                op.call(lambda: {"ok": True})
+                self.assertFalse(op.verify_external(
+                    lambda: {"other": 1}, source_kind="database", locator="orders/42",
+                    expected_path="status", expected_value="completed"))
+                self.assertFalse(op.verify_external(
+                    lambda: {"status": 1}, source_kind="database", locator="orders/42",
+                    expected_path="status", expected_value=True))
+        steps = run.to_run()["steps"]
+        self.assertEqual([s["output"]["comparison"] for s in steps[1:]],
+                         ["field_missing", "mismatched"])
+
+    def test_external_read_errors_do_not_claim_verification(self):
+        def broken():
+            raise RuntimeError("private-provider-token")
+        with Traser().run("read failure") as run:
+            with run.operation("issue_refund") as op:
+                op.call(lambda: {"status": "accepted"})
+                with self.assertRaises(RuntimeError):
+                    op.verify_external(broken, source_kind="api", locator="provider/r42",
+                                       expected_path="status", expected_value="completed")
+                touched = []
+                with self.assertRaises(ValueError):
+                    op.verify_external(lambda: touched.append(True), source_kind="trace",
+                                       locator="provider/r42", expected_path="status",
+                                       expected_value="completed")
+                self.assertEqual(touched, [])
+        request = run.to_request()
+        self.assertEqual(request["execution"]["steps"][1]["status"], "failure")
+        self.assertEqual(request["execution"]["steps"][1]["error"], {"type": "RuntimeError"})
+        self.assertNotIn("verificationChecks", request["evidence"])
+        self.assertNotIn("private-provider-token", json.dumps(request))
+
+    def test_async_external_state_verification(self):
+        async def provider(refund_id):
+            await asyncio.sleep(0)
+            return {"status": "completed", "refund_id": refund_id}
+        async def run_test():
+            with Traser().run("async provider") as run:
+                with run.operation("issue_refund") as op:
+                    op.call(lambda: {"status": "accepted"})
+                    self.assertTrue(await op.averify_external(
+                        provider, "r42", source_kind="api", locator="provider/r42",
+                        expected_path="status", expected_value="completed"))
+            return run.to_request()
+        request = asyncio.run(run_test())
+        self.assertEqual(request["evidence"]["observations"][0]["value"]["status"], "completed")
+        self.assertEqual(request["evidence"]["verificationChecks"][0]["basis"], "external_state")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,18 @@ def main() -> None:
                               locator="synthetic-refund-provider:refund/r-demo-7", value=receipt)
             operation.require(kind="terminal_state",
                               required_for="refund r-demo-7 reaches completed state")
+            # The agent's existing verification checks only the write receipt.
+            claim = run.record_step("Verify from tool result", kind="evaluator", status="success",
+                                    input_value=receipt, output={"verified": True})
+            operation.mark_verification(claim, basis="tool_response")
+
+            # Separate authorized state read, using the application's own provider client.
+            # In this synthetic example the provider is a local stub, not a real API.
+            matched = operation.verify_external(
+                lambda refund_id: {"refund_id": refund_id, "status": "pending"},
+                "r-demo-7", source_kind="api", locator="synthetic-provider/refunds/r-demo-7",
+                expected_path="status", expected_value="completed")
+            assert not matched  # Pending is not proof the refund completed.
         run.record_step("Tell customer", kind="agent", status="success",
                         input_value={"refund_status": "pending"},
                         output={"message": "Your refund has been completed."})
