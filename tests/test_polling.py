@@ -28,9 +28,10 @@ class PollingTests(unittest.TestCase):
                           request["evidence"]["observations"]],
                          ["pending", "pending", "completed"])
         self.assertEqual(len(request["evidence"]["verificationChecks"]), 3)
-        self.assertEqual(len(request["execution"]["steps"]), 4)
-        self.assertEqual(len({s["id"] for s in request["execution"]["steps"]}), 4)
-        self.assertEqual(len({s["operationId"] for s in request["execution"]["steps"]}), 1)
+        self.assertEqual(len(request["execution"]["steps"]), 5)
+        self.assertEqual(len({s["id"] for s in request["execution"]["steps"]}), 5)
+        self.assertEqual(len({s["operationId"] for s in request["execution"]["steps"][:-1]}), 1)
+        self.assertEqual(request["execution"]["steps"][-1]["output"]["pollStatus"], "observed_match")
 
     def test_max_attempts_is_unconfirmed_not_failed(self):
         with Traser().run("still-pending") as run:
