@@ -57,7 +57,7 @@ Use `await op.averify_external(async_reader, ...)` for async provider/database c
 
 The matching MCP investigation release will return `verificationReview` statuses, such as `self_report_only`, `external_state_mismatch` and `external_state_matches_expected_unverified`. An API/database source label is caller-supplied, not independently authenticated by Traser. The currently published MCP package `@maas-dorian/traser@0.3.1` does **not** accept these new `verificationChecks` fields; install a compatible MCP release before sending the new request format.
 
-## Experimental bounded external-state polling (development branch)
+## Experimental bounded external-state polling (development code)
 
 Inspired by engineering feedback about APIs returning HTTP 200 before the
 external write is visible, the SDK now has an opt-in in-process polling helper.
@@ -101,7 +101,7 @@ still requires deliberate minimization and redaction before export.
 
 **Release note:** this code is under development and is **not yet on PyPI**.
 The latest published Python SDK remains v0.1.0 until release checks finish.
-Use an editable checkout of this branch for evaluation.
+Use an editable checkout of the repository for evaluation.
 
 ## Investigation workflow
 
