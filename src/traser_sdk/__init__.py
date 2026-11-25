@@ -2,6 +2,7 @@
 """Traser Python SDK: explicit, local-first execution evidence capture."""
 
 from .recorder import Operation, RunSession, Traser
+from .polling import PollResult
 
-__all__ = ["Traser", "RunSession", "Operation"]
+__all__ = ["Traser", "RunSession", "Operation", "PollResult"]
 __version__ = "0.1.0"
