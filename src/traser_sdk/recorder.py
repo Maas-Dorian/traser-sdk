@@ -16,6 +16,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from .polling import PollResult, _poll_external, _apoll_external
 from typing import Any, Callable
 
 _MISSING = object()
@@ -592,3 +593,47 @@ class Operation:
             self.run._end_step(step, status="failure", error=exc)
             raise
 
+    def poll_external(self, reader: Callable[..., Any], *args: Any,
+                      source_kind: str, locator: str, expected_path: str,
+                      expected_value: Any, timeout_s: float = 30.0,
+                      interval_s: float = 2.0, max_attempts: int = 10,
+                      **kwargs: Any) -> PollResult:
+        """Poll a caller-supplied read-only external source until match or limit.
+
+        Each attempt uses verify_external and is recorded separately. Polling
+        does NOT repeat the originating write. A timeout/limit means the expected
+        state was not observed, not that the write failed. Reader exceptions
+        propagate. This is a synchronous, in-process helper; the application
+        must set timeouts on its own external read client.
+        """
+        result = _poll_external(
+            lambda: self.verify_external(
+                reader, *args, source_kind=source_kind, locator=locator,
+                expected_path=expected_path, expected_value=expected_value,
+                **kwargs),
+            timeout_s=timeout_s, interval_s=interval_s, max_attempts=max_attempts)
+        return self._record_poll_summary(result, locator=locator)
+
+    async def apoll_external(self, reader: Callable[..., Any], *args: Any,
+                             source_kind: str, locator: str, expected_path: str,
+                             expected_value: Any, timeout_s: float = 30.0,
+                             interval_s: float = 2.0, max_attempts: int = 10,
+                             **kwargs: Any) -> PollResult:
+        """Nonblocking async equivalent of poll_external."""
+        result = await _apoll_external(
+            lambda: self.averify_external(
+                reader, *args, source_kind=source_kind, locator=locator,
+                expected_path=expected_path, expected_value=expected_value,
+                **kwargs),
+            timeout_s=timeout_s, interval_s=interval_s, max_attempts=max_attempts)
+        return self._record_poll_summary(result, locator=locator)
+
+    def _record_poll_summary(self, result: PollResult, *, locator: str) -> PollResult:
+        """Keep the poll decision in the execution export, not only in Python."""
+        self.run.record_step(
+            "external_poll_summary:" + self.name, kind="validation",
+            status="success" if result.matched else "unknown",
+            input_value={"operationId": self.operation_id, "locator": locator},
+            output={"pollStatus": result.status, "attempts": result.attempts,
+                    "elapsedMs": result.elapsed_ms})
+        return result

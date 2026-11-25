@@ -57,6 +57,52 @@ Use `await op.averify_external(async_reader, ...)` for async provider/database c
 
 The matching MCP investigation release will return `verificationReview` statuses, such as `self_report_only`, `external_state_mismatch` and `external_state_matches_expected_unverified`. An API/database source label is caller-supplied, not independently authenticated by Traser. The currently published MCP package `@maas-dorian/traser@0.3.1` does **not** accept these new `verificationChecks` fields; install a compatible MCP release before sending the new request format.
 
+## Experimental bounded external-state polling (development branch)
+
+Inspired by engineering feedback about APIs returning HTTP 200 before the
+external write is visible, the SDK now has an opt-in in-process polling helper.
+It **repeats only the application's authorized read callback**, never the
+write. Each check uses `verify_external()` internally, so each observed
+state and verification basis is recorded in the exported MCP request.
+
+```python
+with Traser().run("update-customer") as run:
+    with run.operation("update_address") as op:
+        op.call(lambda: {"http_status": 200, "accepted": True})  # Synthetic write
+
+        # Application-supplied, authorized, read-only callback.
+        def read_customer():
+            return {"status": "completed"}  # Replace with your real GET/query.
+
+        result = op.poll_external(
+            read_customer, source_kind="api", locator="customers/42",
+            expected_path="status", expected_value="completed",
+            timeout_s=30, interval_s=2, max_attempts=10)
+        print(result.status, result.attempts, result.elapsed_ms)
+```
+
+Use `await op.apoll_external(async_reader, ...)` for asynchronous clients.
+Run `python examples/external_polling.py` for a local, network-free example.
+
+Possible statuses are `observed_match`, `unconfirmed_timeout`, and
+`unconfirmed_attempt_limit`. `observed_match` means the caller-supplied read
+reported the expected value; Traser does not independently authenticate
+that source. **Unconfirmed does not mean the original write failed.** Read
+exceptions are re-raised and recorded by exception type, with no fabricated
+success claim. The SDK does not retry read errors in this first version.
+
+This first version uses fixed intervals and a maximum of 50 attempts, bounded
+by the SDK's existing per-run evidence limits. It does not include background
+polling, persistent jobs, backoff/jitter, provider-specific retry logic,
+rate-limit management, or automatic provider credentials. Slow or hung reads
+must be bounded by the application's own client timeout; the wall-clock
+polling deadline cannot interrupt an in-flight blocking read. Sensitive data
+still requires deliberate minimization and redaction before export.
+
+**Release note:** this code is under development and is **not yet on PyPI**.
+The latest published Python SDK remains v0.1.0 until release checks finish.
+Use an editable checkout of this branch for evaluation.
+
 ## Investigation workflow
 
 - Browser: upload the `export_run()` canonical JSON to [Traser browser investigator](https://traser.dev/investigate).
